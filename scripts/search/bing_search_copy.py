@@ -19,7 +19,9 @@ import aiohttp
 import asyncio
 import chardet
 import random
-
+import asyncio
+from crawl4ai import AsyncWebCrawler
+from googlesearch import search
 
 # ----------------------- Set your WebParserClient URL -----------------------
 WebParserClient_url = None
@@ -56,34 +58,47 @@ error_indicators = [
     'Please enable cookies',
 ]
 
+# Crawl with crawl4ai
+async def perform_crawl(url: str):
+    """
+    Performs web crawling on the specified URL and returns the crawler's result.
+
+    Args:
+        url (str): The URL to crawl.
+    """
+    async with AsyncWebCrawler() as crawler:
+        result = await crawler.arun(url=url) # Use the passed 'url' here
+        return result
+
+
 class WebParserClient:
     def __init__(self, base_url: str = "http://localhost:8000"):
         """
-        初始化Web解析器客户端
+         Web Parser Client
         
         Args:
-            base_url: API服务器的基础URL，默认为本地测试服务器
+            base_url: The base URL of the API server, defaulting to the local test server.
         """
         self.base_url = base_url.rstrip('/')
         
     def parse_urls(self, urls: List[str], timeout: int = 120) -> List[Dict[str, Union[str, bool]]]:
         """
-        发送URL列表到解析服务器并获取解析结果
+        Send the URL list to the parsing server and get the parsing results.
         
         Args:
-            urls: 需要解析的URL列表
-            timeout: 请求超时时间，默认20秒
+            urls: List of URLs to be parsed
+            timeout: Request timeout duration, defaults to 20 seconds
             
         Returns:
-            解析结果列表
+            Parsing result list
             
         Raises:
-            requests.exceptions.RequestException: 当API请求失败时
-            requests.exceptions.Timeout: 当请求超时时
+            requests.exceptions.RequestException: When the API request fails
+            requests.exceptions.Timeout: When the request times out
         """
         endpoint = urljoin(self.base_url, "/parse_urls")
         response = requests.post(endpoint, json={"urls": urls}, timeout=timeout)
-        response.raise_for_status()  # 如果响应状态码不是200，抛出异常
+        response.raise_for_status()  # If the response status code is not 200, throw an exception.
         
         return response.json()["results"]
 
@@ -150,7 +165,7 @@ def extract_snippet_with_context(full_text: str, snippet: str, context_chars: in
     except Exception as e:
         return False, f"Failed to extract snippet context due to {str(e)}"
 
-def extract_text_from_url(url, use_jina=False, jina_api_key=None, snippet: Optional[str] = None, keep_links=False):
+def extract_text_from_url(url, use_crawl4ai=False, jina_api_key=None, snippet: Optional[str] = None, keep_links=False):
     """
     Extract text from a URL. If a snippet is provided, extract the context related to it.
 
@@ -165,15 +180,11 @@ def extract_text_from_url(url, use_jina=False, jina_api_key=None, snippet: Optio
         str: Extracted text or context.
     """
     try:
-        if use_jina:
-            jina_headers = {
-                'Authorization': f'Bearer {jina_api_key}',
-                'X-Return-Format': 'markdown',
-            }
-            response = requests.get(f'https://r.jina.ai/{url}', headers=jina_headers).text
+        if use_crawl4ai:
+            response = perform_crawl(url)
             # Remove URLs
             pattern = r"\(https?:.*?\)|\[https?:.*?\]"
-            text = re.sub(pattern, "", response).replace('---','-').replace('===','=').replace('   ',' ').replace('   ',' ')
+            text = re.sub(pattern, "", response.markdown).replace('---','-').replace('===','=').replace('   ',' ').replace('   ',' ')
         else:
             if 'pdf' in url:
                 return extract_pdf_text(url)
@@ -182,9 +193,9 @@ def extract_text_from_url(url, use_jina=False, jina_api_key=None, snippet: Optio
                 response = session.get(url, timeout=30)
                 response.raise_for_status()
                 
-                # 添加编码检测和处理
+                # Add encoding detection and handling
                 if response.encoding.lower() == 'iso-8859-1':
-                    # 尝试从内容检测正确的编码
+                    # Attempt to detect the correct encoding from the content.
                     response.encoding = response.apparent_encoding
                 
                 try:
@@ -339,9 +350,8 @@ def bing_web_search(query, subscription_key, endpoint, market='en-US', language=
 
     while retry_count < max_retries:
         try:
-            response = requests.get(endpoint, headers=headers, params=params, timeout=timeout)
-            response.raise_for_status()  # Raise exception if the request failed
-            search_results = response.json()
+            search_results = list(search(query, lang='en'))
+            print(search_results)
             return search_results
         except Timeout:
             retry_count += 1
@@ -402,23 +412,20 @@ def extract_relevant_info(search_results):
         list: A list of dictionaries containing the extracted information.
     """
     useful_info = []
-    
-    if 'webPages' in search_results and 'value' in search_results['webPages']:
-        for id, result in enumerate(search_results['webPages']['value']):
+
+    if search_results:
+        for id, result in enumerate(search_results):
             info = {
                 'id': id + 1,  # Increment id for easier subsequent operations
-                'title': result.get('name', ''),
-                'url': result.get('url', ''),
-                'site_name': result.get('siteName', ''),
-                'date': result.get('datePublished', '').split('T')[0],
-                'snippet': result.get('snippet', ''),  # Remove HTML tags
+                'url': result,
+                'snippet': '',
+                'title': '',
+                'page_info': '',
                 # Add context content to the information
                 'context': ''  # Reserved field to be filled later
             }
             useful_info.append(info)
-    
     return useful_info
-
 
 
 
@@ -609,7 +616,7 @@ async def fetch_page_content_async(urls: List[str], use_jina: bool = False, jina
         async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers) as session:
             tasks = []
             for url in urls:
-                task = extract_text_from_url_async(
+                task = extract_text_from_url(
                     url, 
                     session, 
                     use_jina, 
@@ -800,7 +807,7 @@ if __name__ == "__main__":
 
     # --- CHOOSE SEARCH TYPE ---
     # search_type = "bing"
-    search_type = "serper"  # or "bing"
+    search_type = "bing"  # or "bing"
 
     search_results = {}
     extracted_info = []
@@ -813,7 +820,6 @@ if __name__ == "__main__":
         # Perform the search
         print("Performing Bing Web Search...")
         search_results = bing_web_search(query, BING_SUBSCRIPTION_KEY, bing_endpoint)
-        
         print("Extracting relevant information from Bing search results...")
         extracted_info = extract_relevant_info(search_results)
 
@@ -837,7 +843,8 @@ if __name__ == "__main__":
 
     print("Fetching and extracting context for each snippet...")
     for info in tqdm(extracted_info, desc="Processing Snippets"):
-        full_text = extract_text_from_url(info['url'], use_jina=False)  # Get full webpage text
+        full_text = extract_text_from_url(info['url'])  # Get full webpage text
+
         if full_text and not full_text.startswith("Error"):
             success, context = extract_snippet_with_context(full_text, info['snippet'])
             if success:

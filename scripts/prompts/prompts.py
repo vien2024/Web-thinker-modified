@@ -65,7 +65,58 @@ Now please analyze the web pages and extract relevant information for the search
 """
 
 
+def get_web_page_title(page_content):
+    return f"""You are an AI assistant specialized in content analysis and summarization. Your task is to accurately identify and provide a concise, relevant title for a web page based solely on its provided textual content.
 
+**Input:**
+You will be provided with the raw textual content extracted from a webpage. This content may include headings, paragraphs, lists, and other text elements, but no HTML tags.
+
+**Task:**
+Analyze the provided content and determine the most appropriate and representative title for the webpage. The title should be:
+1.  **Concise:** Keep it as short as possible while still being informative.
+2.  **Relevant:** Directly reflect the main topic or purpose of the content.
+3.  **Descriptive:** Give a clear idea of what the page is about.
+4.  **Unique:** If possible, try to capture a specific aspect that differentiates it.
+
+**Output Format:**
+Provide only the title, enclosed in markdown bold. Do not include any other text, explanations, or conversational filler.
+
+---
+
+**[Start of Web Page Content]**
+
+{page_content}
+
+**[End of Web Page Content]**
+"""
+
+def get_web_page_snippet(page_content):
+    return f"""You are an expert AI specialized in search engine optimization (SEO) and user experience. Your task is to generate a concise, compelling, and relevant search engine snippet for a web page based solely on its provided content.
+
+**Input:**
+You will be provided with the raw textual content of a webpage. This content is what a search engine would "read" from the page (no HTML tags, just the main text, headings, lists, etc.).
+
+**Task:**
+Analyze the provided web page content and generate a single, high-quality search engine snippet. The snippet should:
+1.  **Summarize Accurately:** Capture the main topic and key takeaways of the page.
+2.  **Be Concise:** Aim for a length that is typically displayed in search results (around 120-160 characters, although exact character count is less important than information density).
+3.  **Be Relevant to Potential Queries:** Imagine what a user would search for to find this page and reflect that relevance.
+4.  **Be Action-Oriented/Compelling (if applicable):** Encourage clicks by highlighting value, solutions, or interesting information.
+5.  **Avoid Redundancy:** Do not repeat information that would likely be in the page's title (e.g., if the title is "Best Coffee Makers," don't start the snippet with "Learn about the best coffee makers..."). Assume the user has already seen the title.
+6.  **Focus on Value:** Emphasize what the user will gain by visiting the page.
+
+**Output Format:**
+Provide only the generated snippet. Do not include any other text, explanations, or conversational filler.
+
+---
+
+**[Start of Web Page Content]**
+
+{page_content}
+
+**[End of Web Page Content]**
+
+"""
 
 def get_web_page_reader_instruction(query, document):
     return f"""{document}
@@ -265,7 +316,7 @@ def get_multiqa_search_o1_instruction(MAX_SEARCH_LIMIT):
     return (
         "You are a reasoning assistant with the ability to perform web searches to help "
         "you answer the user's question accurately. You have special tools:\n\n"
-        "- To perform a search: write <|begin_search_query|> your query here <|end_search_query|>.\n"
+        "- To perform a search: write <|begin_search_query|> your query here <|end_search_query|>. It must end in <|end_search_query|>\n"
         "Then, the system will search and analyze relevant web pages, then provide you with helpful information in the format <|begin_search_result|> ...search results... <|end_search_result|>.\n\n"
         f"You can repeat the search process multiple times if necessary. The maximum number of search attempts is limited to {MAX_SEARCH_LIMIT}.\n\n"
         "Once you have all the information you need, continue your reasoning.\n\n"

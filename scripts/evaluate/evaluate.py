@@ -9,7 +9,7 @@ from collections import defaultdict
 # from lcb_runner.evaluation import codegen_metrics
 import sys
 sys.path.append('./scripts/utils')
-from math_equivalence import is_equiv
+from utils.math_equivalence import is_equiv
 from openai import OpenAI, AsyncOpenAI
 import asyncio
 from typing import List

@@ -14,8 +14,9 @@ import asyncio
 import aiohttp
 
 from openai import AsyncOpenAI
+from cerebras.cloud.sdk import AsyncCerebras
 
-from search.bing_search import (
+from search.bing_search_copy import (
     bing_web_search, 
     extract_relevant_info, 
     fetch_page_content, 
@@ -40,11 +41,11 @@ from prompts.prompts import (
     get_code_search_o1_instruction, 
     get_singleqa_search_o1_instruction, 
     get_multiqa_search_o1_instruction, 
-    get_deepseek_multiqa_search_o1_instruction,
     get_task_instruction_openqa, 
     get_task_instruction_math, 
     get_task_instruction_multi_choice, 
     get_task_instruction_code,
+    get_web_page_snippet,
     get_web_page_title, 
 )
 from transformers import AutoTokenizer
@@ -116,10 +117,10 @@ def parse_args():
     parser.add_argument('--search_engine', type=str, default="bing", choices=["bing", "serper"], help="Search engine to use (bing or serper). Default: bing")
     parser.add_argument('--eval', action='store_true', help="Whether to run evaluation after generation.")
     parser.add_argument('--seed', type=int, default=None, help="Random seed for generation. If not set, will use current timestamp as seed.")
-    parser.add_argument('--api_base_url', type=str, required=True, help="Base URL for the API endpoint")
-    parser.add_argument('--aux_api_base_url', type=str, required=True, help="Base URL for the auxiliary model API endpoint")
-    parser.add_argument('--model_name', type=str, default="QwQ-32B", help="Name of the model to use")
-    parser.add_argument('--aux_model_name', type=str, default="Qwen2.5-32B-Instruct", help="Name of the auxiliary model to use")
+    parser.add_argument('--api_base_url', type=str, required=None, help="Base URL for the API endpoint")
+    parser.add_argument('--aux_api_base_url', type=str, required=None, help="Base URL for the auxiliary model API endpoint")
+    parser.add_argument('--model_name', type=str, default="qwen-3-32b", help="Name of the model to use")
+    parser.add_argument('--aux_model_name', type=str, default="qwen-3-32b", help="Name of the auxiliary model to use")
     parser.add_argument('--concurrent_limit', type=int, default=32, help="Maximum number of concurrent API calls")
     parser.add_argument('--lora_name', type=str, default=None, help="Name of the LoRA adapter to load")
     parser.add_argument('--lora_path', type=str, default=None, help="Path to the LoRA weights")
@@ -131,8 +132,8 @@ def parse_args():
 
 # Initialize tokenizers
 args = parse_args()
-tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
-aux_tokenizer = AutoTokenizer.from_pretrained(args.aux_tokenizer_path)
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-32B")
+aux_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-32B")
 
 
 def extract_between(text, start_marker, end_marker):
@@ -166,7 +167,7 @@ def format_search_results(relevant_info: List[Dict]) -> str:
 
 
 async def generate_response(
-    client: AsyncOpenAI,
+    client: AsyncCerebras,
     prompt: str,
     semaphore: asyncio.Semaphore,
     generate_mode: str = "chat",
@@ -176,7 +177,7 @@ async def generate_response(
     repetition_penalty: float = 1.0,
     top_k: int = 1,
     min_p: float = 0.0,
-    model_name: str = "QwQ-32B",
+    model_name: str = "qwen-3-32b",
     stop: List[str] = [END_SEARCH_QUERY],
     retry_limit: int = 3,
     bad_words: List[str] = [f"{END_SEARCH_RESULT}\n\n{tokenizer.eos_token}"],
@@ -187,7 +188,7 @@ async def generate_response(
             async with semaphore:
                 if generate_mode == "chat":
                     messages = [{"role": "user", "content": prompt}]
-                    if 'qwq' in model_name.lower() or 'deepseek' in model_name.lower() or 'r1' in model_name.lower():
+                    if 'qwen' in model_name.lower() or 'deepseek' in model_name.lower() or 'r1' in model_name.lower():
                         formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                     else:
                         formatted_prompt = aux_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -195,22 +196,14 @@ async def generate_response(
                         formatted_prompt = formatted_prompt + "<think>\n"
                 else:
                     formatted_prompt = prompt
-
+                print(formatted_prompt)
                 response = await client.completions.create(
                     model=model_name,
                     prompt=formatted_prompt,
                     temperature=temperature,
                     top_p=top_p,
                     max_tokens=max_tokens,
-                    stop=stop,
-                    extra_body={
-                        'top_k': top_k,
-                        'include_stop_str_in_output': True,
-                        'repetition_penalty': repetition_penalty,
-                        # 'bad_words': bad_words,
-                        # 'min_p': min_p
-                    },
-                    timeout=3600,
+                    stop=stop
                 )
                 return formatted_prompt, response.choices[0].text
         except Exception as e:
@@ -228,8 +221,8 @@ async def generate_response(
 
 
 async def generate_deep_web_explorer(
-    client: AsyncOpenAI,
-    aux_client: AsyncOpenAI,
+    client: AsyncCerebras,
+    aux_client: AsyncCerebras,
     search_query: str,
     document: str,
     search_intent: str,
@@ -305,7 +298,7 @@ async def generate_deep_web_explorer(
                 else:
                     try:
                         if args.search_engine == "bing":
-                            results = await bing_web_search_async(new_query, args.bing_subscription_key, args.bing_endpoint)
+                            results = await bing_web_search(new_query, args.bing_subscription_key, args.bing_endpoint)
                         elif args.search_engine == "serper":
                             results = await google_serper_search_async(new_query, args.serper_api_key)
                         else: # Should not happen
@@ -426,8 +419,8 @@ async def generate_deep_web_explorer(
 
 async def process_single_sequence(
     seq: Dict,
-    client: AsyncOpenAI,
-    aux_client: AsyncOpenAI,
+    client: AsyncCerebras,
+    aux_client: AsyncCerebras,
     semaphore: asyncio.Semaphore,
     args: argparse.Namespace,
     search_cache: Dict,
@@ -442,7 +435,6 @@ async def process_single_sequence(
     
     # Initialize web explorer interactions list
     seq['web_explorer'] = []
-    
     # First response uses chat completion
     formatted_prompt, response = await generate_response(
         client=client,
@@ -457,11 +449,11 @@ async def process_single_sequence(
         min_p=args.min_p,
         stop=[END_SEARCH_QUERY],
     )
-    
+
+    response += '<|end_search_query|>'
     # Update token count and sequence fields
     tokens_this_response = len(response.split())
     total_tokens += tokens_this_response
-    
     seq['output'] += response.replace('</think>\n', '')
     seq['history'].append(response.replace('</think>\n', ''))
     seq['original_prompt'] = formatted_prompt
@@ -492,7 +484,7 @@ async def process_single_sequence(
             _, search_intent = await generate_response(
                 client=aux_client,
                 model_name=args.aux_model_name,
-                max_tokens=1000,
+                max_tokens=2000,
                 prompt=get_search_intent_instruction(seq['output']),
                 semaphore=semaphore,
             )
@@ -564,16 +556,26 @@ async def process_single_sequence(
                 else:
                     # Use raw content directly as page info
                     doc_info['page_info'] = raw_content
+                    title_prompt = get_web_page_title(raw_content)
+                    snippet_prompt = get_web_page_snippet(raw_content)
                     # # Use detailed web page reader to process content
                     # reader_prompt = get_detailed_web_page_reader_instruction(search_query, search_intent, raw_content)
-                    # _, page_info = await generate_response(
-                    #     client=aux_client,
-                    #     prompt=reader_prompt,
-                    #     semaphore=semaphore,
-                    #     max_tokens=4000,
-                    #     model_name=args.aux_model_name,
-                    # )
-                    # doc_info['page_info'] = page_info
+                    _, page_title = await generate_response(
+                        client=aux_client,
+                        prompt=title_prompt,
+                        semaphore=semaphore,
+                        max_tokens=100,
+                        model_name=args.aux_model_name,
+                    )
+                    _, page_snippet = await generate_response(
+                        client=aux_client,
+                        prompt=title_prompt,
+                        semaphore=semaphore,
+                        max_tokens=100,
+                        model_name=args.aux_model_name,
+                    )
+                    doc_info['title'] = page_title
+                    doc_info['snippet'] = page_snippet
 
             formatted_documents = format_search_results(relevant_info)
 
@@ -697,7 +699,162 @@ async def main_async():
         args.seed = int(time.time())
     random.seed(args.seed)
     np.random.seed(args.seed)
+    args.search_engine = "bing"
+    args.jina_api_key = 'df'
+    args.single_question = '''Is there a vulnerability in the following code ? If there is explain why and what kind of CWE (common weakness enumeration) is, if not just say there is no vulneraility? **CODE** static long ext4_zero_range(struct file *file, loff_t offset,
+loff_t len, int mode)
+{
+struct inode *inode = file_inode(file);
+handle_t *handle = NULL;
+unsigned int max_blocks;
+loff_t new_size = 0;
+int ret = 0;
+int flags;
+int credits;
+int partial_begin, partial_end;
+loff_t start, end;
+ext4_lblk_t lblk;
+struct address_space *mapping = inode->i_mapping;
+unsigned int blkbits = inode->i_blkbits;
 
+trace_ext4_zero_range(inode, offset, len, mode);
+
+if (!S_ISREG(inode->i_mode))
+return -EINVAL;
+
+/* Call ext4_force_commit to flush all data in case of data=journal. */
+if (ext4_should_journal_data(inode)) {
+ret = ext4_force_commit(inode->i_sb);
+if (ret)
+return ret;
+}
+
+/*
+* Write out all dirty pages to avoid race conditions
+* Then release them.
+*
+if (mapping->nrpages && mapping_tagged(mapping, PAGECACHE_TAG_DIRTY)) {
+ret = filemap_write_and_wait_range(mapping, offset,
+offset + len - 1);
+if (ret)
+return ret;
+}
+/*
+* Round up offset. This is not fallocate, we neet to zero out
+* blocks, so convert interior block aligned part of the range to
+* unwritten and possibly manually zero out unaligned parts of the
+* range.
+*/
+start = round_up(offset, 1 << blkbits);
+end = round_down((offset + len), 1 << blkbits);
+
+if (start < offset || end > offset + len)
+return -EINVAL;
+partial_begin = offset & ((1 << blkbits) - 1);
+partial_end = (offset + len) & ((1 << blkbits) - 1);
+
+lblk = start >> blkbits;
+max_blocks = (end >> blkbits);
+if (max_blocks < lblk)
+max_blocks = 0;
+else
+max_blocks -= lblk;
+
+mutex_lock(&inode->i_mutex);
+
+/*
+* Indirect files do not support unwritten extnets
+*/
+if (!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))) {
+ret = -EOPNOTSUPP;
+goto out_mutex;
+}
+
+if (!(mode & FALLOC_FL_KEEP_SIZE) &&
+offset + len > i_size_read(inode)) {
+new_size = offset + len;
+ret = inode_newsize_ok(inode, new_size);
+if (ret)
+goto out_mutex;
+}
+
+flags = EXT4_GET_BLOCKS_CREATE_UNWRIT_EXT;
+if (mode & FALLOC_FL_KEEP_SIZE)
+flags |= EXT4_GET_BLOCKS_KEEP_SIZE;
+
+/* Preallocate the range including the unaligned edges */
+if (partial_begin || partial_end) {
+ret = ext4_alloc_file_blocks(file,
+round_down(offset, 1 << blkbits) >> blkbits,
+(round_up((offset + len), 1 << blkbits) -
+round_down(offset, 1 << blkbits)) >> blkbits,
+new_size, flags, mode);
+if (ret)
+goto out_mutex;
+
+}
+
+/* Zero range excluding the unaligned edges */
+if (max_blocks > 0) {
+flags |= (EXT4_GET_BLOCKS_CONVERT_UNWRITTEN |
+EXT4_EX_NOCACHE);
+
+/* Now release the pages and zero block aligned part of pages*
+truncate_pagecache_range(inode, start, end - 1);
+inode->i_mtime = inode->i_ctime = ext4_current_time(inode);
+/* Wait all existing dio workers, newcomers will block on i_mutex */
+ext4_inode_block_unlocked_dio(inode);
+inode_dio_wait(inode);
+
+ret = ext4_alloc_file_blocks(file, lblk, max_blocks, new_size,
+flags, mode);
+if (ret)
+goto out_dio;
+}
+if (!partial_begin && !partial_end)
+goto out_dio;
+
+/*
+* In worst case we have to writeout two nonadjacent unwritten
+* blocks and update the inode
+*/
+credits = (2 * ext4_ext_index_trans_blocks(inode, 2)) + 1;
+if (ext4_should_journal_data(inode))
+credits += 2;
+handle = ext4_journal_start(inode, EXT4_HT_MISC, credits);
+if (IS_ERR(handle)) {
+ret = PTR_ERR(handle);
+ext4_std_error(inode->i_sb, ret);
+goto out_dio;
+}
+
+inode->i_mtime = inode->i_ctime = ext4_current_time(inode);
+if (new_size) {
+ext4_update_inode_size(inode, new_size);
+} else {
+/*
+* Mark that we allocate beyond EOF so the subsequent truncate
+* can proceed even if the new size is the same as i_size.
+*/
+if ((offset + len) > i_size_read(inode))
+ext4_set_inode_flag(inode, EXT4_INODE_EOFBLOCKS);
+}
+ext4_mark_inode_dirty(handle, inode);
+
+/* Zero out partial block at the edges of the range */
+ret = ext4_zero_partial_blocks(handle, inode, offset, len);
+
+if (file->f_flags & O_SYNC)
+ext4_handle_sync(handle);
+
+ext4_journal_stop(handle);
+out_dio:
+ext4_inode_resume_unlocked_dio(inode);
+out_mutex:
+mutex_unlock(&inode->i_mutex);
+return ret;
+}'''
+    args.bing_subscription_key = 'df'
     # Validate API keys based on selected search engine
     if args.search_engine == "bing" and not args.bing_subscription_key:
         print("Error: Bing search engine is selected, but --bing_subscription_key is not provided.")
@@ -790,15 +947,9 @@ async def main_async():
     os.makedirs(output_dir, exist_ok=True)
 
     # Initialize the OpenAI client
-    client = AsyncOpenAI(
-        api_key=args.api_key,
-        base_url=args.api_base_url,
-    )
+    client = AsyncCerebras(api_key="csk-6rkwh6rnkk3j42njhd5emm3w4cr853x6nx9rn6hxncp8vvnc")  # This is the default and can be omitted
     # Initialize auxiliary client
-    aux_client = AsyncOpenAI(
-        api_key=args.aux_api_key,
-        base_url=args.aux_api_base_url,
-    )
+    aux_client = AsyncCerebras(api_key="csk-6rkwh6rnkk3j42njhd5emm3w4cr853x6nx9rn6hxncp8vvnc")
     
     if not args.single_question:
         # Load and prepare data
@@ -809,7 +960,6 @@ async def main_async():
             indices = list(range(len(filtered_data)))
             selected_indices = random.sample(indices, min(args.subset_num, len(indices)))
             filtered_data = [filtered_data[i] for i in selected_indices]
-
     # Prepare sequences
     active_sequences = []
     for item in filtered_data:
